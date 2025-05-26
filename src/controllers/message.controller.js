@@ -1,6 +1,7 @@
 import cloudinary from "../lib/cloudinary.js";
 import Message from "../models/message.model.js";
 import User from "../models/user.model.js";
+import { getReceiverSocketId, io } from "../lib/socket.js";
 
 export const getUsersForSideBar = async (req, res) => {
   try {
@@ -18,12 +19,12 @@ export const getUsersForSideBar = async (req, res) => {
 export const getMessages = async (req, res) => {
   try {
     const { id: userChatId } = req.params;
-    const sendId = req.user._id;
+    const senderId = req.user._id;
 
-    const messages = Message.find({
+    const messages = await Message.find({
       $or: [
-        { sendId: sendId, receiveId: userChatId },
-        { sendId: userChatId, receiveId: sendId },
+        { senderId: senderId, receiverId: userChatId },
+        { senderId: userChatId, receiverId: senderId },
       ],
     });
     res.status(200).json(messages);
@@ -36,29 +37,38 @@ export const getMessages = async (req, res) => {
 export const sendMessage = async (req, res) => {
   try {
     const { text, image } = req.body;
-    const { id: receiveId } = req.params;
-    const sendId = req.user._id;
+    const { id: receiverId } = req.params;
+    const senderId = req.user._id;
 
     let imageUrl;
     if (image) {
-      const uploadResponse = await cloudinary.uploader(image);
+      const uploadResponse = await cloudinary.uploader.upload(image);
       imageUrl = uploadResponse.secure_url;
     }
 
     const newMessage = new Message({
-      sendId,
-      receiveId,
+      senderId: senderId,
+      receiverId: receiverId,
       text,
       image: imageUrl,
     });
 
     await newMessage.save();
 
-    //Funcionalidad para que funcione a tiempo real
+    // Enviar a través de Socket.io
+    const receiverSocketId = getReceiverSocketId(receiverId);
+    if (receiverSocketId) {
+      io.to(receiverSocketId).emit("newMessage", newMessage);
+    }
+
+    // Enviar también al chat específico (mejora para mayor fiabilidad)
+    const chatId1 = `${senderId}-${receiverId}`;
+    const chatId2 = `${receiverId}-${senderId}`;
+    io.to(chatId1).to(chatId2).emit("newMessage", newMessage);
 
     res.status(201).json(newMessage);
   } catch (error) {
-    console.log("Erorr en enviar el mensage", error.message);
+    console.log("Error en enviar el mensaje", error.message);
     res.status(500).json({ error: "Error del servidor" });
   }
 };
